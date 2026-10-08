@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build & Release Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.21'
+          check-latest: true
+
+      - name: Extract Tag Name
+        id: tag
+        run: echo "TAG_NAME=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Compile and Package Artifacts
+        run: |
+          mkdir -p dist
+          TAG="${{ steps.tag.outputs.TAG_NAME }}"
+          APP_NAME="ifakelocation"
+
+          TARGETS=(
+            "darwin/amd64/darwin-x64"
+            "darwin/arm64/darwin-arm64"
+            "linux/amd64/linux-x64"
+            "linux/arm64/linux-arm64"
+            "windows/amd64/windows-x64"
+            "windows/arm64/windows-arm64"
+          )
+
+          for target in "${TARGETS[@]}"; do
+            IFS="/" read -r GOOS GOARCH PLATFORM <<< "$target"
+            echo "==> Building for $GOOS/$GOARCH ($PLATFORM)..."
+            
+            EXT=""
+            if [ "$GOOS" = "windows" ]; then
+              EXT=".exe"
+            fi
+
+            OUTPUT_DIR="build_${PLATFORM}"
+            mkdir -p "$OUTPUT_DIR"
+
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH go build \
+              -ldflags="-s -w -X main.appVersion=${TAG#v}" \
+              -o "$OUTPUT_DIR/${APP_NAME}${EXT}" \
+              ./cmd/ifakelocation
+
+            cp README.md LICENSE updates.json "$OUTPUT_DIR/"
+            if [ -d "DeveloperImages" ]; then
+              cp -r DeveloperImages "$OUTPUT_DIR/"
+            fi
+
+            ARCHIVE_NAME="${APP_NAME}-${TAG}-${PLATFORM}"
+            if [ "$GOOS" = "windows" ]; then
+              (cd "$OUTPUT_DIR" && zip -r "../dist/${ARCHIVE_NAME}.zip" .)
+            else
+              tar -czf "dist/${ARCHIVE_NAME}.tar.gz" -C "$OUTPUT_DIR" .
+            fi
+
+            rm -rf "$OUTPUT_DIR"
+          done
+
+          # Generate sha256 checksums
+          echo "==> Generating checksums..."
+          cd dist
+          sha256sum * > checksums.txt
+          cd ..
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
